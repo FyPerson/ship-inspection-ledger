@@ -1,0 +1,10 @@
+# 本项目是单文件 HTML,无构建产物;此处仅防误传常见临时/敏感文件
+*.xlsm
+*.xlsx
+*.json
+!package.json
+监装报销统计_备份_*.json
+.DS_Store
+Thumbs.db
+tmp/
+node_modules/
