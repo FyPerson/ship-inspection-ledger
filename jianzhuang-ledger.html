@@ -1890,6 +1890,12 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         if (this._suppressOpen) { this._suppressOpen = false; return; }
         this.open = true; this.query = '';
       },
+      // 输入框已是焦点元素时,浏览器不会重新派发 focus 事件(见 focus() 注释),
+      // 导致「保存并继续录」自动聚焦后,用户紧接着点击想选下拉项却怎么也点不开。
+      // click 只处理这一种残留场景:不重复 onFocus 的清空逻辑,只在下拉未展开时补开。
+      onClick: function () {
+        if (!this.open) { this.open = true; }
+      },
       onBlur: function () {
         this.open = false;
         this.query = this.selectedLabel;
@@ -1918,7 +1924,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     },
     template:
       '<div class="combo" @focusout="onBlur">' +
-      '<input type="text" ref="inputEl" v-model="query" @focus="onFocus" @keydown.enter.prevent="onEnter" :placeholder="placeholder" autocomplete="off" />' +
+      '<input type="text" ref="inputEl" v-model="query" @focus="onFocus" @click="onClick" @keydown.enter.prevent="onEnter" :placeholder="placeholder" autocomplete="off" />' +
       '<div class="combo-list" v-if="open">' +
       '<div class="opt" v-for="opt in filtered" :key="opt.value" @mousedown.prevent="pick(opt)">{{ opt.label }}</div>' +
       '<div class="opt-empty" v-if="filtered.length===0 && !allowCreate && !goCreateLabel">无匹配项</div>' +
@@ -3035,13 +3041,18 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         var totalRow = rows.length - 1;
         ws1['!merges'] = voyageMergeRanges.concat([{ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 11 } }]);
 
-        // 按人员汇总(始终未合并口径,加 外聘/归属人 两列)
-        var rows2 = [['人员', '外聘', '归属人', '船次数', '监装天数合计', '报销金额合计', '补贴金额合计']];
+        // 按人员汇总:完全扁平化,每人每科目一行(§按人员页展开区同口径:subjects 遍历 + usdSub 单列追加),
+        // 不设汇总行、不带船次数/监装天数,人员/外聘/归属人在每行重复显示,便于 Excel 拉透视表二次分析。
+        var rows2 = [['人员', '外聘', '归属人', '科目', '报销金额', '补贴金额']];
         this.personSummaryBase.forEach(function (p) {
-          rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', p.voyageCount, p.days, p.reimb, p.allow]);
+          self.subjects.forEach(function (t) {
+            var s = p.byType[t];
+            if (s) rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', t, s.reimb, s.allow]);
+          });
+          if (p.usdSub) rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', '美元支付', p.usdSub.reimb, p.usdSub.allow]);
         });
-        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2], moneyCols: [5, 6], numCols: [3, 4] });
-        ws2['!cols'] = [{ wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 9 }, { wch: 12 }, { wch: 14 }, { wch: 14 }];
+        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2, 3], moneyCols: [4, 5] });
+        ws2['!cols'] = [{ wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 10 }, { wch: 13 }, { wch: 13 }];
 
         // 按船东汇总
         var rows3 = [['船东', '船次数', '船次监装天数合计', '监装费USD合计', '人民币费用合计', '支出合计', '利润合计']];
