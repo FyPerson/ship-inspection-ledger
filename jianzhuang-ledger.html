@@ -2985,6 +2985,10 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         var header = ['船名', '船号', '监装人员', '流水天数', '报销金额', '补贴金额', '支出总计', '船东名称', '船次监装天数', '监装费USD', '汇率', '人民币费用', '利润', '填表日期'];
         rows.push(header);
 
+        // 船次级字段(列 6–12:支出总计/船东/船次监装天数/监装费USD/汇率/人民币费用/利润)在同一船次多条流水时,
+        // 只在该船次首行填值、其余行留空。导出时把这些空行纵向合并到首行(voyageMergeRanges),视觉上「多行属于同一条船」。
+        var VOYAGE_COL_START = 6, VOYAGE_COL_END = 12;   // 需纵向合并的列区间(含端点)
+        var voyageMergeRanges = [];
         var profitTotal = 0;
         this.store.voyages.forEach(function (v) {
           var vf = voyageFlows(self.store, v.id);
@@ -2997,6 +3001,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           if (vf.length === 0) {
             rows.push([v.ship, v.shipNo, '', '', '', ''].concat(voyageCols).concat(['']));
           } else {
+            var firstRowIndex = rows.length;  // 该船次首行在 rows 中的行号(含 header 偏移)
             vf.forEach(function (f, idx) {
               // 后缀规则:type≠常规 → 人名+科目(美元支付作为科目也走此规则,导出为「人名美元支付」)
               var personLabel = f.person + (f.type === '常规' ? '' : f.type);
@@ -3005,6 +3010,13 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
               row.push(f.date === null ? '' : f.date);
               rows.push(row);
             });
+            // 多条流水才需要纵向合并;单条流水本就一行,无需合并
+            if (vf.length > 1) {
+              var lastRowIndex = firstRowIndex + vf.length - 1;
+              for (var c = VOYAGE_COL_START; c <= VOYAGE_COL_END; c++) {
+                voyageMergeRanges.push({ s: { r: firstRowIndex, c: c }, e: { r: lastRowIndex, c: c } });
+              }
+            }
           }
         });
         // 单元格值永远写原值,不对合计做 round2(§4.4 Q-L1)
@@ -3017,10 +3029,11 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           rateCol: 10
         });
         ws1['!cols'] = [{ wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 9 }, { wch: 11 }, { wch: 11 }, { wch: 12 }, { wch: 12 }, { wch: 9 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 12 }];
+        // 合并单元格集合 = 船次级字段纵向合并(数据区) + 合计行横向合并。
+        // 社区版 SheetJS 0.20.3 原生支持 !merges(与已用的 !freeze 同级);对齐/加粗属 cell.s 富样式,社区版 writeFile 不生效,故合并后文字默认顶端左对齐。
         // 合计行「利润总计」标签横向合并 A–L(第 0–11 列),M 列(利润,第 12 列)保留数值,N 列(填表日期,第 13 列)留空。
-        // 社区版 SheetJS 0.20.3 原生支持 !merges(与已用的 !freeze 同级);对齐/加粗属 cell.s 富样式,社区版 writeFile 不生效,故合并后文字默认左对齐。
         var totalRow = rows.length - 1;
-        ws1['!merges'] = [{ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 11 } }];
+        ws1['!merges'] = voyageMergeRanges.concat([{ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 11 } }]);
 
         // 按人员汇总(始终未合并口径,加 外聘/归属人 两列)
         var rows2 = [['人员', '外聘', '归属人', '船次数', '监装天数合计', '报销金额合计', '补贴金额合计']];
