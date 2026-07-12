@@ -421,7 +421,7 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
 <div class="topbar">
   <div class="topbar-left">
     <span class="topbar-title kai">监装报销统计</span>
-    <span class="topbar-sub">船舶监装费用台账</span>
+    <span class="topbar-sub">船舶监装费用台账 · v{{ appVersion }}</span>
   </div>
   <div class="topbar-right">
     <span class="save-status">
@@ -440,7 +440,14 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
 <div class="banner danger" v-else-if="storageStatus==='writeFailed'">保存失败,数据仅保存在内存中,请立即导出备份</div>
 <div class="banner warn" v-if="showBackupReminder && storageStatus==='normal'">
   {{ daysSinceExport===null ? '尚未导出过备份' : ('已 ' + daysSinceExport + ' 天未导出备份') }},建议导出备份以防数据丢失
-  <button class="btn btn-outline btn-sm banner-action" @click="exportJsonBackup">立即导出备份</button>
+  <button class="btn btn-outline btn-sm banner-action" @click="exportJsonBackupWithAlert">立即导出备份</button>
+</div>
+<div class="banner warn" v-if="showUpdateBanner">
+  检测到新版本 v{{ updateCheck.remoteVersion }}(当前 v{{ appVersion }})。升级三步:①点「先备份再下载新版」 ②确认下载文件夹已有 JSON 备份后关闭本页面 ③打开新文件——若显示演示数据请勿录入,在欢迎窗导入刚备份的 JSON
+  <button class="btn btn-outline btn-sm banner-action" @click="upgradeBackupAndDownload">先备份再下载新版</button>
+  <button class="btn btn-outline btn-sm banner-action" @click="dismissUpdate">本版本不再提醒</button>
+  <template v-if="showUpdateBackupFailedMsg"><br>备份未完成,未下载新版,请重试</template>
+  <template v-if="showUpdateRescue"><br>新版没开始下载?<button class="btn-link" type="button" @click="rescueDownloadNewVersion">点此单独下载新版</button>(下载后请确认文件夹中同时有 JSON 备份文件)</template>
 </div>
 
 <div class="tabnav">
@@ -831,7 +838,7 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
     <h3 class="card-title">导出与备份</h3>
     <div class="toolbar">
       <button class="btn btn-primary" @click="exportXlsx">导出 Excel(xlsx)</button>
-      <button class="btn btn-outline" @click="exportJsonBackup">导出 JSON 备份</button>
+      <button class="btn btn-outline" @click="exportJsonBackupWithAlert">导出 JSON 备份</button>
       <button class="btn btn-outline" @click="triggerImportFile">导入 JSON</button>
       <input type="file" ref="importFileInput" accept=".json,application/json" style="display:none" @change="handleImportFileChange" />
     </div>
@@ -839,10 +846,27 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
   </div>
 
   <div class="card">
+    <h3 class="card-title">版本与更新</h3>
+    <div class="toolbar">
+      <span>当前版本 v{{ appVersion }}</span>
+      <button class="btn btn-outline" :disabled="manualCheckDisabled" @click="checkForUpdate('manual')">检查更新</button>
+      <button class="btn-link" type="button" @click="openReleasePage">查看发布页</button>
+    </div>
+    <p class="hint" v-if="updateCheck.owner==='manual'">
+      <template v-if="updateCheck.state==='checking'">正在检查…</template>
+      <template v-else-if="updateCheck.state==='hasUpdate'">发现新版本 v{{ updateCheck.remoteVersion }},请按页面顶部横幅指引升级;若已关闭提醒,可点「查看发布页」下载</template>
+      <template v-else-if="updateCheck.state==='upToDate'">已是最新版本</template>
+      <template v-else-if="updateCheck.state==='localNewer'">当前版本(v{{ appVersion }})高于公开发布版(v{{ updateCheck.remoteVersion }})</template>
+      <template v-else-if="updateCheck.state==='failed'">检查失败:无法连接更新服务器(不影响正常使用)</template>
+    </p>
+    <p class="hint">升级不丢数据的保障是<strong>升级前导出的 JSON 备份文件</strong>——请亲眼确认它已出现在下载文件夹再继续。同一台电脑、同一 Windows 用户、同一浏览器且非隐私窗口下,新文件通常会自动沿用原数据,但此行为不作承诺;换电脑、换浏览器、清理浏览器数据后请用「导入 JSON」恢复。本工具启动时会向 GitHub 查询公开版本号(仅下载一个版本号文件,不上传任何数据),无网络时该功能自动失效,不影响使用。</p>
+  </div>
+
+  <div class="card">
     <h3 class="card-title">危险操作</h3>
     <div class="toolbar">
       <button class="btn btn-danger" @click="openClearDataConfirm">清空数据</button>
-      <button class="btn btn-outline" @click="restoreFactoryData">覆盖为出厂历史数据</button>
+      <button class="btn btn-outline" @click="restoreFactoryData">覆盖为演示数据</button>
     </div>
   </div>
 </div>
@@ -855,9 +879,12 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
 <div class="modal-mask" v-if="showWelcome">
   <div class="modal">
     <h2 class="modal-title kai">欢迎使用监装报销统计</h2>
-    <p class="desc">本工具已为您载入原表的 289 条历史流水与 73 个船次记录。</p>
+    <p class="desc">当前显示的是<strong>演示数据</strong>({{ store.flows.length }} 条流水、{{ store.voyages.length }} 个船次)。若你之前有自己的数据(例如刚升级新版本),<strong>请勿在此基础上录入</strong>——点下方「导入 JSON 备份」恢复你的备份。</p>
     <p class="desc">数据保存在<strong>本电脑当前浏览器</strong>中,<strong>不会写回这个 HTML 文件</strong>。换电脑、换浏览器或发给别人时,数据不会跟着文件走;请用「设置与数据」页的「导出 JSON 备份」→ 新环境「导入」迁移数据。</p>
-    <div class="modal-actions"><button class="btn btn-primary" @click="closeWelcome">知道了</button></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" @click="triggerImportFile">导入 JSON 备份</button>
+      <button class="btn btn-primary" @click="closeWelcome">知道了</button>
+    </div>
   </div>
 </div>
 
@@ -1067,7 +1094,7 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
     <h2 class="modal-title">清空数据</h2>
     <div class="warn-box">此操作将清空全部流水、船次与名录,且不可恢复。建议先导出备份。</div>
     <div class="modal-actions">
-      <button class="btn btn-outline left" @click="exportJsonBackup">先导出备份</button>
+      <button class="btn btn-outline left" @click="exportJsonBackupWithAlert">先导出备份</button>
       <button class="btn btn-outline" @click="cancelClearData">取消</button>
       <button class="btn btn-danger" @click="executeClearData">确认清空</button>
     </div>
@@ -1692,7 +1719,8 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     validateStoreV2: validateStoreV2,
     detectV13Shape: detectV13Shape,
     normalizeV1: normalizeV1,
-    usdPreTransform: usdPreTransform
+    usdPreTransform: usdPreTransform,
+    APP_VERSION: '1.6' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1708,6 +1736,12 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
   var round2 = CORE.round2; // 实现唯一定义于 JZBX_CORE,此处仅取引用别名
   var V2_KEY = 'jzbx_ledger_v2';
   var V1_KEY = 'jzbx_ledger_v1'; // 只读迁移源,任何情况下不删除、不改写
+  var DISMISS_KEY = 'jzbx_update_dismissed'; // 更新提醒压制(存版本号,独立于台账数据,读写走 storageAdapter)
+
+  // ===== 更新检测三常量(方案 v1.4 A2:全部硬编码,远端 manifest 不控制任何导航目标) =====
+  var UPDATE_MANIFEST_URL = 'https://raw.githubusercontent.com/FyPerson/ship-inspection-ledger/main/version.json';
+  var DOWNLOAD_URL = 'https://github.com/FyPerson/ship-inspection-ledger/releases/latest/download/jianzhuang-ledger.html';
+  var RELEASE_PAGE_URL = 'https://github.com/FyPerson/ship-inspection-ledger/releases/latest';
 
   // ===================== 工具函数 =====================
   function fmtMoney(x) {
@@ -1734,6 +1768,26 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
   function todayStr() {
     var d = new Date();
     return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+
+  // ===== 版本号工具(方案 v1.4 A3:每段 ≤9 位、≤4 段;缺段补零;前导零按数值) =====
+  function isValidVersionString(s) {
+    return typeof s === 'string' && /^\d{1,9}(\.\d{1,9}){0,3}$/.test(s);
+  }
+  // 返回 -1/0/1:a<b / a==b / a>b。调用前提:两参数均已通过 isValidVersionString
+  function compareVersions(a, b) {
+    var pa = a.split('.'), pb = b.split('.');
+    var len = Math.max(pa.length, pb.length);
+    for (var i = 0; i < len; i++) {
+      var na = i < pa.length ? parseInt(pa[i], 10) : 0; // 缺段补零 → '1.6'=='1.6.0'
+      var nb = i < pb.length ? parseInt(pb[i], 10) : 0; // parseInt 去前导零 → '1.06'=='1.6'
+      if (na !== nb) return na < nb ? -1 : 1;
+    }
+    return 0;
+  }
+  function versionsEqual(a, b) {
+    if (!isValidVersionString(a) || !isValidVersionString(b)) return false;
+    return compareVersions(a, b) === 0;
   }
 
   // ===================== 计算字段(主方案 §4.3 + USD 改科目) =====================
@@ -1949,6 +2003,19 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         startupRecoveryConfirming: false,
         legacyError: null,             // v1 损坏(矩阵行 5 / V3)
         nowTick: Date.now(),
+
+        // ===== 版本与更新检测(方案 v1.4 A1/A3/A4) =====
+        appVersion: CORE.APP_VERSION,  // 唯一引用点,所有 UI 绑定此值,禁止再硬编码版本号
+        updateCheck: {
+          state: 'idle',               // idle | checking | hasUpdate | upToDate | localNewer | failed
+          owner: null,                 // 'auto' | 'manual' 反馈所有权(checking 中可由 auto 升级为 manual)
+          remoteVersion: null
+        },
+        dismissedVersion: null,            // 持久压制的版本号(启动时经 storageAdapter 读入)
+        dismissedVersionThisSession: null, // 会话级压制的版本号(持久写失败时的降级,非布尔)
+        // 补救/失败状态绑定版本号(代码首审 H-1:防跨版本串扰——旧版本的补救链接/失败提示不得出现在新版本横幅上)
+        rescueForVersion: null,        // 补救链接对应的版本:合并按钮已点击 且 备份触发成功 且 已尝试触发新版下载时记录
+        backupFailedForVersion: null,  // 备份未完成对应的版本(该版本横幅上不得出现任何下载新版入口)
 
         filterVoyageId: '',
         filterPerson: '',
@@ -2307,6 +2374,26 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       showBackupReminder: function () {
         var d = this.daysSinceExport;
         return d === null || d >= 7;
+      },
+      // 更新横幅显示条件(方案 v1.4 A4):hasUpdate 且该版本未被压制(持久/会话均按版本号数值等价)
+      showUpdateBanner: function () {
+        var uc = this.updateCheck;
+        if (uc.state !== 'hasUpdate' || !uc.remoteVersion) return false;
+        if (versionsEqual(uc.remoteVersion, this.dismissedVersion)) return false;
+        if (versionsEqual(uc.remoteVersion, this.dismissedVersionThisSession)) return false;
+        return true;
+      },
+      // 手动检查按钮禁用条件(方案 v1.4 A3):仅 checking 且所有权已归 manual 时禁用
+      // (auto checking 时保持可点,供所有权升级路径使用)
+      manualCheckDisabled: function () {
+        return this.updateCheck.state === 'checking' && this.updateCheck.owner === 'manual';
+      },
+      // 补救链接/失败提示只对"产生它们的那个版本"显示(代码首审 H-1:版本绑定,防跨版本串扰)
+      showUpdateRescue: function () {
+        return this.showUpdateBanner && versionsEqual(this.rescueForVersion, this.updateCheck.remoteVersion);
+      },
+      showUpdateBackupFailedMsg: function () {
+        return this.showUpdateBanner && versionsEqual(this.backupFailedForVersion, this.updateCheck.remoteVersion);
       },
       savedAtLabel: function () {
         if (!this.store.savedAt) return '尚未保存';
@@ -3126,12 +3213,127 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         this.flashExported();
       },
 
+      // 加固(方案 v1.4 A4,五审 H-2):返回布尔,语义 = "备份下载已成功触发",不代表文件已实际保存
+      // (浏览器拦截/用户取消/落盘失败页面不可见,由升级引导的人工确认环节兜底)。
+      // lastExportAt 仅在下载成功触发后更新——失败的备份不得让周提醒沉默(同时修复 v1.5 先改时间戳的既有缺陷)。
       exportJsonBackup: function () {
-        this.store.lastExportAt = formatDateTime(new Date());
-        var json = JSON.stringify(this.store, null, 2);
-        this.downloadTextFile(json, '监装报销统计_备份_' + formatDateOnly(new Date()) + '.json');
-        this.persistNow();
-        this.flashExported();
+        // 第一段:stringify + 触发下载 —— 唯一决定返回值(代码首审 M-1)
+        try {
+          var json = JSON.stringify(this.store, null, 2);
+          this.downloadTextFile(json, '监装报销统计_备份_' + formatDateOnly(new Date()) + '.json');
+        } catch (e) {
+          console.error('导出 JSON 备份失败:', e);
+          return false;
+        }
+        // 第二段:下载已成功触发,后处理独立容错,不得反转返回值
+        try {
+          this.store.lastExportAt = formatDateTime(new Date());
+          this.persistNow();
+          this.flashExported();
+        } catch (e) {
+          console.error('备份后处理异常(不影响已触发的下载):', e);
+        }
+        return true;
+      },
+      // 设置页/备份提醒横幅的独立导出入口:失败时明确告知(同享加固)
+      exportJsonBackupWithAlert: function () {
+        if (!this.exportJsonBackup()) alert('导出备份失败,请重试');
+      },
+
+      // ===================== 版本更新检测(方案 v1.4 A3-A5) =====================
+      // 单请求不变量:同一时刻至多一个网络请求(auto 只发一次且可被取消;checking 中 manual 要么复用要么被禁用)。
+      // 非响应式上下文挂在实例上(DOMContentLoaded 挂载处初始化):
+      //   _updInFlight = 进行中请求;_autoTimerId = 3 秒启动定时器;_manualRequested = 本会话已手动检查。
+      checkForUpdate: function (source) {
+        var self = this;
+        if (source === 'manual') {
+          this._manualRequested = true;
+          // 并发规则 1:取消尚未发起的自动检查
+          if (this._autoTimerId !== null && this._autoTimerId !== undefined) {
+            clearTimeout(this._autoTimerId);
+            this._autoTimerId = null;
+          }
+          // 并发规则 2:auto 请求进行中 → 复用并升级反馈所有权(按钮仅在 checking 且 owner==='manual' 时禁用)
+          if (this.updateCheck.state === 'checking') {
+            if (!this._updInFlight) {
+              // 原子初始化约束的防御分支:checking 却无进行中请求 = 内部异常,复位而非新建请求
+              console.error('updateCheck 内部异常:checking 但无进行中请求,复位 idle');
+              this.updateCheck.state = 'idle';
+              this.updateCheck.owner = null;
+              return;
+            }
+            this.updateCheck.owner = 'manual';
+            return;
+          }
+        } else {
+          // auto 入口:本会话已手动检查则跳过;checking 中不应再有 auto(防御)
+          if (this._manualRequested) return;
+          if (this.updateCheck.state === 'checking') return;
+        }
+
+        // ---- 原子初始化:以下登记全部同步完成,首个异步回调(微任务)之前不变量已成立 ----
+        this.updateCheck.state = 'checking';
+        this.updateCheck.owner = source;
+        var controller = new AbortController();                                        // 请求闭包持有
+        var requestTimeoutId = setTimeout(function () { controller.abort(); }, 5000);  // 请求闭包持有
+        var request = fetch(UPDATE_MANIFEST_URL, { cache: 'no-store', signal: controller.signal })
+          .then(function (resp) {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            return resp.text();
+          })
+          .then(function (text) {
+            // 解析规模上限:4096 个 UTF-16 代码单元(非网络字节上限;来源为硬编码 GitHub HTTPS,不做流式字节校验)
+            if (text.length > 4096) throw new Error('manifest 超过解析规模上限');
+            var parsed = JSON.parse(text);
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('manifest 不是对象');
+            if (!isValidVersionString(parsed.version)) throw new Error('version 字段格式非法');
+            // 结果状态只在成功/失败分支写入,禁止在 finally 重置
+            self.updateCheck.remoteVersion = parsed.version;
+            var cmp = compareVersions(parsed.version, self.appVersion);
+            self.updateCheck.state = cmp > 0 ? 'hasUpdate' : (cmp === 0 ? 'upToDate' : 'localNewer');
+          })
+          .catch(function (err) {
+            // manual → failed(设置页可见);auto → 回 idle,UI 零变化
+            if (self.updateCheck.owner === 'manual') self.updateCheck.state = 'failed';
+            else { self.updateCheck.state = 'idle'; self.updateCheck.owner = null; }
+            console.info('版本检查未完成(不影响使用):', err && err.message);
+          })
+          .finally(function () {
+            // finally 只清本请求闭包资源;清空共享引用前身份校验
+            clearTimeout(requestTimeoutId);
+            if (self._updInFlight === request) self._updInFlight = null;
+          });
+        this._updInFlight = request; // 同步登记(先于任何回调执行)
+      },
+
+      // 合并按钮(方案 v1.4 A4,五审 H-1/H-2;代码首审 H-1:状态绑定版本):备份下载成功触发是下载新版的前置条件
+      upgradeBackupAndDownload: function () {
+        var v = this.updateCheck.remoteVersion;
+        this.backupFailedForVersion = null;
+        this.rescueForVersion = null;
+        if (!this.exportJsonBackup()) {
+          this.backupFailedForVersion = v; // 仅该版本横幅显示失败提示,且不得出现任何下载新版入口
+          return;
+        }
+        this.triggerUrlDownload(DOWNLOAD_URL);
+        // 补救链接三联合条件成立(且仅对当前版本有效):合并按钮已点击 + 备份触发成功 + 已尝试触发新版下载
+        this.rescueForVersion = v;
+      },
+      rescueDownloadNewVersion: function () { this.triggerUrlDownload(DOWNLOAD_URL); },
+      triggerUrlDownload: function (url) {
+        // 临时 <a> 触发下载,不打开新窗口(方案 A2)
+        var a = document.createElement('a');
+        a.href = url;
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      },
+      openReleasePage: function () { window.open(RELEASE_PAGE_URL, '_blank', 'noopener'); },
+      dismissUpdate: function () {
+        var v = this.updateCheck.remoteVersion;
+        if (!v) return;
+        var res = storageAdapter.write(DISMISS_KEY, v);
+        if (res.ok) this.dismissedVersion = v;
+        else this.dismissedVersionThisSession = v; // 写失败仅会话级隐藏(存版本号),不弹错误(方案 A4)
       },
 
       triggerImportFile: function () { this.$refs.importFileInput.click(); },
@@ -3173,6 +3375,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         this.filterVoyageId = ''; this.filterPerson = ''; this.filterType = ''; this.filterYear = ''; this.filterKeyword = '';
         this.mergeOn = false; this.personFilter = 'all'; this.stashedPersonFilter = null;
         this.persistNow();
+        this.showWelcome = false; // 欢迎窗导入直达:仅导入成功才关闭欢迎窗(方案 v1.4 A6;取消/校验失败路径不动它)
         alert('导入成功');
       },
 
@@ -3187,7 +3390,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         this.persistNow();
       },
       restoreFactoryData: function () {
-        if (!confirm('将用出厂历史数据【覆盖当前全部数据】(流水、船次、名录),此操作不可撤销。\n\n建议先「导出 JSON 备份」再继续。确定覆盖吗?')) return;
+        if (!confirm('将用出厂演示数据【覆盖当前全部数据】(流水、船次、名录),此操作不可撤销。\n\n建议先「导出 JSON 备份」再继续。确定覆盖吗?')) return;
         this.store = cloneFactoryData();
         this.dataSource = 'factory';
         this.mergeOn = false; this.personFilter = 'all'; this.stashedPersonFilter = null;
@@ -3229,11 +3432,18 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       }
     });
 
-    app.mount('#app');
-    setInterval(function () {
-      var vm = app._instance && app._instance.proxy;
-      if (vm) vm.nowTick = Date.now();
-    }, 60000);
+    var vm = app.mount('#app'); // 保存组件代理,全文件不再依赖 app._instance 内部 API(方案 v1.4 A7)
+    setInterval(function () { vm.nowTick = Date.now(); }, 60000);
+
+    // ===== 更新检测启动(方案 v1.4 A3):非响应式上下文初始化 + 3 秒自动检查 =====
+    var dr = storageAdapter.read(DISMISS_KEY);
+    vm.dismissedVersion = (dr.ok && dr.value && /^\d{1,9}(\.\d{1,9}){0,3}$/.test(dr.value)) ? dr.value : null; // 读失败按未压制
+    vm._updInFlight = null;
+    vm._manualRequested = false;
+    vm._autoTimerId = setTimeout(function () {
+      vm._autoTimerId = null; // 回调开始执行立即置空(A3:autoTimerId 生命周期)
+      vm.checkForUpdate('auto');
+    }, 3000);
   });
 })();
 
