@@ -161,6 +161,7 @@ input[type=text], input[type=search], input[type=number], input[type=date], sele
 }
 input:focus, select:focus, textarea:focus { border-color: var(--primary-bg-hover); box-shadow: 0 0 0 2px rgba(242, 192, 136, 0.35); }
 input[disabled], select[disabled] { background: var(--zebra); color: var(--deco); }
+.person-belongs-select { width: 160px; max-width: 100%; }
 
 .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .field label { font-size: 14px; color: var(--ink); font-weight: 600; }
@@ -802,11 +803,11 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
             <td><input type="checkbox" v-model="p.external" @change="onPersonExternalChange" /></td>
             <td>
               <template v-if="(childCountByName[p.name]||0) > 0">
-                <select disabled :value="''"><option value="">—</option></select>
+                <select class="person-belongs-select" disabled :value="''"><option value="">—</option></select>
                 <div class="hint">该人员已有 {{ childCountByName[p.name] }} 名归属人员,不能再归属他人</div>
               </template>
               <template v-else>
-                <select :value="p.belongsTo || ''" @change="onBelongsToChange(p, $event.target.value)">
+                <select class="person-belongs-select" :value="p.belongsTo || ''" @change="onBelongsToChange(p, $event.target.value)">
                   <option value="">无</option>
                   <option v-for="n in belongsToOptionsFor(p)" :key="n" :value="n">{{ n }}</option>
                 </select>
@@ -1720,7 +1721,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     detectV13Shape: detectV13Shape,
     normalizeV1: normalizeV1,
     usdPreTransform: usdPreTransform,
-    APP_VERSION: '1.6' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.6.1' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
