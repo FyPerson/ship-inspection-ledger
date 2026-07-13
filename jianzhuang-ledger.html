@@ -1721,7 +1721,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     detectV13Shape: detectV13Shape,
     normalizeV1: normalizeV1,
     usdPreTransform: usdPreTransform,
-    APP_VERSION: '1.6.1' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.6.2' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -3130,17 +3130,26 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         ws1['!merges'] = voyageMergeRanges.concat([{ s: { r: totalRow, c: 0 }, e: { r: totalRow, c: 11 } }]);
 
         // 按人员汇总:完全扁平化,每人每科目一行(§按人员页展开区同口径:subjects 遍历 + usdSub 单列追加),
-        // 不设汇总行、不带船次数/监装天数,人员/外聘/归属人在每行重复显示,便于 Excel 拉透视表二次分析。
-        var rows2 = [['人员', '外聘', '归属人', '科目', '报销金额', '补贴金额']];
+        // 人员/外聘/归属人在每行重复显示,便于 Excel 拉透视表二次分析。
+        // 船次数/监装天数为人级合计,仅写在每人首行、同人其余科目行留空(与主表船次级字段纵向留空同口径),
+        // 避免同一数字在多行重复导致目视汇总时误相加;buildSheetFromRows 对空串单元格直接跳过不写入。
+        var rows2 = [['人员', '外聘', '归属人', '船次数', '监装天数', '科目', '报销金额', '补贴金额']];
         this.personSummaryBase.forEach(function (p) {
+          var first = true; // 每人首个明细行携带船次数/监装天数,其余行留空
           self.subjects.forEach(function (t) {
             var s = p.byType[t];
-            if (s) rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', t, s.reimb, s.allow]);
+            if (s) {
+              rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', t, s.reimb, s.allow]);
+              first = false;
+            }
           });
-          if (p.usdSub) rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', '美元支付', p.usdSub.reimb, p.usdSub.allow]);
+          if (p.usdSub) {
+            rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', '美元支付', p.usdSub.reimb, p.usdSub.allow]);
+            first = false;
+          }
         });
-        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2, 3], moneyCols: [4, 5] });
-        ws2['!cols'] = [{ wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 10 }, { wch: 13 }, { wch: 13 }];
+        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2, 5], numCols: [3, 4], moneyCols: [6, 7] });
+        ws2['!cols'] = [{ wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 13 }];
 
         // 按船东汇总
         var rows3 = [['船东', '船次数', '船次监装天数合计', '监装费USD合计', '人民币费用合计', '支出合计', '利润合计']];
