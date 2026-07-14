@@ -783,13 +783,15 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
     <div class="toolbar">
       <input type="text" v-model="newPersonInput" placeholder="新增人员姓名" @keydown.enter="submitNewPerson" style="width:200px" />
       <button class="btn btn-outline btn-sm" @click="submitNewPerson">添加</button>
+      <span class="hint-inline">人员序号使用三位数字，从 001 开始且不可重复；未编号人员导出时排在末尾</span>
     </div>
     <div class="table-wrap">
       <table class="ledger">
-        <thead><tr><th>姓名</th><th>外聘</th><th>归属人</th><th>备注</th><th>操作</th></tr></thead>
+        <thead><tr><th>序号</th><th>姓名</th><th>外聘</th><th>归属人</th><th>备注</th><th>操作</th></tr></thead>
         <tbody>
-          <tr v-if="store.settings.persons.length===0" class="empty-row"><td colspan="5">名录为空</td></tr>
+          <tr v-if="store.settings.persons.length===0" class="empty-row"><td colspan="6">名录为空</td></tr>
           <tr v-for="p in store.settings.persons" :key="p.name">
+            <td><input type="text" :value="p.personNo || ''" @change="onPersonNoChange(p, $event)" inputmode="numeric" maxlength="3" placeholder="001" style="width:72px" /></td>
             <td>
               <template v-if="editingPersonName===p.name">
                 <input type="text" v-model="editingPersonNameInput" @keydown.enter="commitRenamePerson(p)" @keydown.esc="cancelRenamePerson" ref="editPersonInput" style="width:120px" />
@@ -1147,6 +1149,15 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 </script>
 <script>
 var JZBX_INITIAL_DATA = {"schemaVersion":1,"savedAt":null,"lastExportAt":null,"seq":20,"settings":{"rates":[{"value":6.8,"note":"示例汇率"}],"subjects":["常规","住宿费","机票","美元支付"],"subjectColors":{"常规":"#F5C86E","住宿费":"#8FD0B5","机票":"#8FBEE8","美元支付":"#C4A9E0"},"persons":[{"name":"张三","external":false,"note":"","belongsTo":null},{"name":"李四","external":false,"note":"","belongsTo":null},{"name":"王五","external":false,"note":"","belongsTo":null},{"name":"赵六","external":true,"note":"示例外聘人员","belongsTo":null},{"name":"孙七","external":false,"note":"示例:归属张三","belongsTo":"张三"}],"owners":["示例船东A","示例船东B","示例船东C"]},"voyages":[{"id":1,"ship":"DEMO ONE","shipNo":"DEMO-001","owner":"示例船东A","days":10,"rate":6.8,"unitPrice":500,"feeUSDOverride":null,"cnyOverride":null,"profitOverride":null},{"id":2,"ship":"DEMO TWO","shipNo":"DEMO-002","owner":"示例船东B","days":7,"rate":6.8,"unitPrice":null,"feeUSDOverride":3500,"cnyOverride":null,"profitOverride":null},{"id":3,"ship":"DEMO THREE","shipNo":"DEMO-003","owner":"示例船东C","days":5,"rate":null,"unitPrice":null,"feeUSDOverride":null,"cnyOverride":2000,"profitOverride":null}],"flows":[{"id":10,"voyageId":1,"person":"张三","type":"常规","days":10,"reimb":1200,"allow":2000,"date":"2026-01-05","originalForeign":null},{"id":11,"voyageId":1,"person":"李四","type":"机票","days":0,"reimb":1800,"allow":0,"date":"2026-01-06","originalForeign":null},{"id":12,"voyageId":1,"person":"赵六","type":"常规","days":8,"reimb":0,"allow":1600,"date":"2026-01-05","originalForeign":null},{"id":13,"voyageId":2,"person":"王五","type":"常规","days":7,"reimb":900,"allow":1400,"date":"2026-02-11","originalForeign":null},{"id":14,"voyageId":2,"person":"孙七","type":"住宿费","days":0,"reimb":600,"allow":0,"date":"2026-02-12","originalForeign":null},{"id":15,"voyageId":2,"person":"张三","type":"美元支付","days":0,"reimb":6800,"allow":0,"date":"2026-02-13","originalForeign":1000},{"id":16,"voyageId":3,"person":"李四","type":"常规","days":5,"reimb":500,"allow":1000,"date":"2026-03-01","originalForeign":null}]};
+// 发布制品内嵌数据升级到 schema 2；旧备份仍由核心迁移器在导入/启动时转换。
+JZBX_INITIAL_DATA.schemaVersion = 2;
+JZBX_INITIAL_DATA.settings.persons.forEach(function (p) { if (p.personNo === undefined) p.personNo = ''; });
+JZBX_INITIAL_DATA.flows.forEach(function (f) {
+  if (typeof f.originalForeign !== 'number' || !isFinite(f.originalForeign)) return;
+  var voyage = JZBX_INITIAL_DATA.voyages.find(function (v) { return v.id === f.voyageId; });
+  var rate = voyage && typeof voyage.rate === 'number' && isFinite(voyage.rate) ? voyage.rate : (f.originalForeign !== 0 ? f.reimb / f.originalForeign : 0);
+  f.originalForeign = { amount: f.originalForeign, rate: rate };
+});
 if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DATA; }
 
 </script>
@@ -1303,14 +1314,81 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     return typeof x;
   }
 
+  var CURRENT_SCHEMA_VERSION = 2;
+
+  // 船号排序规则:忽略文字前缀，提取 YY-MM-NN 或 YY-MMNN 数字段；括号批次作为末级数字。
+  // 示例:ABC-26-0104(1) → [26,1,4,1]，26-01-04 → [26,1,4,0]。
+  function shipNoSortKey(shipNo) {
+    var text = String(shipNo || '').trim();
+    var m = text.match(/(?:^|\D)(\d{2})-(\d{2})-(\d+)(?:\D|$)/);
+    if (!m) m = text.match(/(?:^|\D)(\d{2})-(\d{2})(\d{2})(?:\D|$)/);
+    if (!m) return null;
+    var batch = text.match(/\((\d+)\)\s*$/);
+    return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10), batch ? parseInt(batch[1], 10) : 0];
+  }
+
+  function naturalCompare(a, b) {
+    return String(a || '').localeCompare(String(b || ''), 'zh-CN', { numeric: true, sensitivity: 'base' });
+  }
+
+  function compareVoyagesForExport(a, b) {
+    var ka = shipNoSortKey(a.shipNo), kb = shipNoSortKey(b.shipNo);
+    if (ka && kb) {
+      for (var i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+    } else if (ka) return -1;
+    else if (kb) return 1;
+    var shipCmp = naturalCompare(a.ship, b.ship);
+    if (shipCmp !== 0) return shipCmp;
+    var noCmp = naturalCompare(a.shipNo, b.shipNo);
+    if (noCmp !== 0) return noCmp;
+    return (a.id || 0) - (b.id || 0);
+  }
+
+  function comparePersonSummaries(a, b) {
+    var na = a.personNo || '', nb = b.personNo || '';
+    if (na && nb && na !== nb) return parseInt(na, 10) - parseInt(nb, 10);
+    if (na && !nb) return -1;
+    if (!na && nb) return 1;
+    return naturalCompare(a.person, b.person);
+  }
+
+  // schema 1 → 2:人员补三位序号字段；兼容曾经把 originalForeign 仅保存为美元数值的备份。
+  function migrateSchema(input) {
+    if (!isPlainObject(input) || input.schemaVersion !== 1) return input;
+    if (isPlainObject(input.settings) && Array.isArray(input.settings.persons)) {
+      input.settings.persons.forEach(function (p) {
+        if (isPlainObject(p) && p.personNo === undefined) p.personNo = '';
+      });
+    }
+    var rateByVoyageId = {};
+    if (Array.isArray(input.voyages)) input.voyages.forEach(function (v) {
+      if (isPlainObject(v) && isFiniteNum(v.rate)) rateByVoyageId[v.id] = v.rate;
+    });
+    if (Array.isArray(input.flows)) input.flows.forEach(function (f) {
+      if (!isPlainObject(f) || !isFiniteNum(f.originalForeign)) return;
+      var amount = f.originalForeign;
+      var rate = rateByVoyageId[f.voyageId];
+      if (!isFiniteNum(rate) && amount !== 0 && isFiniteNum(f.reimb)) rate = f.reimb / amount;
+      if (!isFiniteNum(rate) && amount === 0 && f.reimb === 0) rate = 0;
+      if (isFiniteNum(rate)) f.originalForeign = { amount: amount, rate: rate };
+    });
+    input.schemaVersion = CURRENT_SCHEMA_VERSION;
+    return input;
+  }
+
   // ===== 名录归属全图校验(§1.1;UI 写前校验与六段流水线段 5 共用) =====
   // persons: 对象数组(name 已 trim)。返回中文错误数组。
   function validatePersonsGraph(persons) {
     var errors = [];
     var byName = {};
+    var byPersonNo = {};
     persons.forEach(function (p) {
       if (byName[p.name]) errors.push('人员名录重复:「' + p.name + '」出现多次');
       else byName[p.name] = p;
+      if (p.personNo) {
+        if (byPersonNo[p.personNo]) errors.push('人员序号重复:「' + p.personNo + '」同时用于「' + byPersonNo[p.personNo] + '」和「' + p.name + '」');
+        else byPersonNo[p.personNo] = p.name;
+      }
     });
     if (errors.length > 0) return errors;
     var hasChild = {};
@@ -1406,7 +1484,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     if (errors.length > 0) return { ok: false, errors: errors };
 
     // ---- 段 2:基础类型校验(类型垃圾在此报错,绝不进入 trim) ----
-    if (input.schemaVersion !== 1) errors.push('schemaVersion 必须等于 1,实际为 ' + JSON.stringify(input.schemaVersion));
+    if (input.schemaVersion !== CURRENT_SCHEMA_VERSION) errors.push('schemaVersion 必须等于 ' + CURRENT_SCHEMA_VERSION + ',实际为 ' + JSON.stringify(input.schemaVersion));
     if (!(input.savedAt === undefined || input.savedAt === null || typeof input.savedAt === 'string')) errors.push('savedAt 必须是字符串或 null,实际为 ' + typeName(input.savedAt));
     if (!(input.lastExportAt === undefined || input.lastExportAt === null || typeof input.lastExportAt === 'string')) errors.push('lastExportAt 必须是字符串或 null,实际为 ' + typeName(input.lastExportAt));
     if (!isFiniteNum(input.seq)) errors.push('seq 必须是有限数,实际为 ' + JSON.stringify(input.seq));
@@ -1427,6 +1505,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       var pp = 'settings.persons[' + i + ']';
       if (!isPlainObject(p)) { errors.push(pp + ' 必须是对象,实际为 ' + typeName(p)); return; }
       if (typeof p.name !== 'string') errors.push(pp + '.name 必须是字符串,实际为 ' + typeName(p.name));
+      if (!(p.personNo === undefined || typeof p.personNo === 'string')) errors.push(pp + '.personNo 必须是字符串,实际为 ' + typeName(p.personNo));
       if (!(p.external === undefined || typeof p.external === 'boolean')) errors.push(pp + '.external 必须是布尔值,实际为 ' + typeName(p.external));
       if (!(p.note === undefined || typeof p.note === 'string')) errors.push(pp + '.note 必须是字符串,实际为 ' + typeName(p.note));
       if (!(p.belongsTo === undefined || p.belongsTo === null || typeof p.belongsTo === 'string')) errors.push(pp + '.belongsTo 必须是字符串或 null,实际为 ' + typeName(p.belongsTo));
@@ -1496,6 +1575,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       if (belongsTo === '') belongsTo = null; // X-H3:空串规范为 null
       return {
         name: p.name.trim(),
+        personNo: p.personNo === undefined ? '' : p.personNo.trim(),
         external: p.external === undefined ? false : p.external,
         note: p.note === undefined ? '' : p.note.trim(),
         belongsTo: belongsTo
@@ -1503,6 +1583,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     });
     persons.forEach(function (p, i) {
       if (p.name === '') errors.push('settings.persons[' + i + '].name 去除首尾空格后不能为空');
+      if (p.personNo !== '' && !/^(?!000)\d{3}$/.test(p.personNo)) errors.push('settings.persons[' + i + '].personNo 必须是 001-999 的三位数字或空字符串');
     });
 
     var voyages = input.voyages.map(function (v) {
@@ -1548,7 +1629,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     persons.forEach(function (p) { if (!personByName[p.name]) personByName[p.name] = p; });
     flows.forEach(function (f) {
       if (!personByName[f.person]) {
-        var np = { name: f.person, external: false, note: '', belongsTo: null };
+        var np = { name: f.person, personNo: '', external: false, note: '', belongsTo: null };
         persons.push(np);
         personByName[f.person] = np;
       }
@@ -1567,7 +1648,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     });
     persons.forEach(function (p) {
       if (p.belongsTo !== null && !personByName[p.belongsTo]) {
-        var np = { name: p.belongsTo, external: false, note: '', belongsTo: null };
+        var np = { name: p.belongsTo, personNo: '', external: false, note: '', belongsTo: null };
         persons.push(np);
         personByName[np.name] = np;
       }
@@ -1639,7 +1720,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     return {
       ok: true,
       data: {
-        schemaVersion: 1,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         savedAt: input.savedAt === undefined ? null : input.savedAt,
         lastExportAt: input.lastExportAt === undefined ? null : input.lastExportAt,
         seq: maxId + 1,
@@ -1672,7 +1753,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       // persons 字符串 → 对象(已是对象的保留)
       if (Array.isArray(s.settings.persons)) {
         s.settings.persons = s.settings.persons.map(function (p) {
-          if (typeof p === 'string') return { name: p, external: false, note: '', belongsTo: null };
+          if (typeof p === 'string') return { name: p, personNo: '', external: false, note: '', belongsTo: null };
           return p;
         });
       }
@@ -1716,12 +1797,17 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     DEFAULT_SUBJECT_COLORS: DEFAULT_SUBJECT_COLORS,
     fillMissingColors: fillMissingColors,
     isValidDateStr: isValidDateStr,
+    CURRENT_SCHEMA_VERSION: CURRENT_SCHEMA_VERSION,
+    shipNoSortKey: shipNoSortKey,
+    compareVoyagesForExport: compareVoyagesForExport,
+    comparePersonSummaries: comparePersonSummaries,
+    migrateSchema: migrateSchema,
     validatePersonsGraph: validatePersonsGraph,
     validateStoreV2: validateStoreV2,
     detectV13Shape: detectV13Shape,
     normalizeV1: normalizeV1,
     usdPreTransform: usdPreTransform,
-    APP_VERSION: '1.6.2' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.6.3' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -1735,8 +1821,9 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
 
   var CORE = window.JZBX_CORE;
   var round2 = CORE.round2; // 实现唯一定义于 JZBX_CORE,此处仅取引用别名
-  var V2_KEY = 'jzbx_ledger_v2';
-  var V1_KEY = 'jzbx_ledger_v1'; // 只读迁移源,任何情况下不删除、不改写
+  var V3_KEY = 'jzbx_ledger_v3';
+  var V2_KEY = 'jzbx_ledger_v2'; // v1.6.2 及以前的只读迁移源,任何情况下不删除、不改写
+  var V1_KEY = 'jzbx_ledger_v1'; // 更早版本只读迁移源,任何情况下不删除、不改写
   var DISMISS_KEY = 'jzbx_update_dismissed'; // 更新提醒压制(存版本号,独立于台账数据,读写走 storageAdapter)
 
   // ===== 更新检测三常量(方案 v1.4 A2:全部硬编码,远端 manifest 不控制任何导航目标) =====
@@ -1882,12 +1969,13 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     var candidate = JSON.parse(JSON.stringify(parsed));
     CORE.usdPreTransform(candidate, isV13);          // 第 1、2 步:流水转换 + 旧清单闭环
     if (isV13) candidate = CORE.normalizeV1(candidate); // 第 3 步:v1.3 归一化(subjects 缺失补默认 3 项)
+    CORE.migrateSchema(candidate);                    // schema 1 → 2:人员序号 + 旧美元原值形态
     return candidate;                                 // 第 4 步:调用方进入六段校验
   }
 
   function emptyStore(keepLastExportAt) {
     return {
-      schemaVersion: 1,
+      schemaVersion: CORE.CURRENT_SCHEMA_VERSION,
       savedAt: null,
       lastExportAt: keepLastExportAt || null,
       seq: 1,
@@ -2257,6 +2345,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           var pObj = self.personByName[name];
           return {
             person: name,
+            personNo: pObj ? pObj.personNo : '',
             external: pObj ? pObj.external : false,
             belongsTo: pObj ? pObj.belongsTo : null,
             merged: false,
@@ -2474,11 +2563,11 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         return { backgroundColor: bg, color: CORE.fgForBg(bg), borderColor: CORE.fgForBg(bg) };
       },
 
-      // ---------------- 启动流程(增补 §7.1 七行为矩阵) ----------------
+      // ---------------- 启动流程:v3 当前存储 → v2/v1 只读迁移源 → 出厂数据 ----------------
       boot: function () {
-        var res2 = storageAdapter.read(V2_KEY);
-        if (!res2.ok) {
-          // 行 3:v2 读取抛异常 → 内存模式
+        var res3 = storageAdapter.read(V3_KEY);
+        if (!res3.ok) {
+          // 当前存储读取抛异常 → 内存模式
           this.store = cloneFactoryData();
           this.storageStatus = 'memory';
           this.dataSource = 'memory';
@@ -2486,55 +2575,54 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           this.booted = true;
           return;
         }
-        if (res2.value !== null && res2.value !== undefined) {
-          var parsed2;
-          try { parsed2 = JSON.parse(res2.value); }
+        if (res3.value !== null && res3.value !== undefined) {
+          var parsed3;
+          try { parsed3 = JSON.parse(res3.value); }
           catch (e) {
-            // 行 2:v2 损坏
-            this.startupError = { rawText: res2.value, errors: ['JSON 解析失败:' + e.message] };
+            this.startupError = { rawText: res3.value, errors: ['JSON 解析失败:' + e.message] };
             this.booted = true;
             return;
           }
-          var val2 = CORE.validateStoreV2(prepareForValidation(parsed2)); // pre-勘正 v1.4 数据经前置转换后无缝升级
-          if (!val2.ok) {
-            this.startupError = { rawText: res2.value, errors: val2.errors };
+          var val3 = CORE.validateStoreV2(prepareForValidation(parsed3));
+          if (!val3.ok) {
+            this.startupError = { rawText: res3.value, errors: val3.errors };
             this.booted = true;
             return;
           }
-          // 行 1:v2 正常
-          this.store = val2.data;
+          this.store = val3.data;
           this.dataSource = 'localStorage';
           this.booted = true;
           return;
         }
-        // v2 缺失 → 读 v1(只读;读取抛异常时视为缺失)
-        var res1 = storageAdapter.read(V1_KEY);
-        var v1raw = res1.ok ? res1.value : null;
-        if (v1raw !== null && v1raw !== undefined) {
-          var val1 = null;
+
+        // v3 缺失 → 按新旧顺序读取 v2/v1,成功后写入 v3,原键永久保留作回退快照。
+        var legacyKeys = [V2_KEY, V1_KEY];
+        for (var sourceIndex = 0; sourceIndex < legacyKeys.length; sourceIndex++) {
+          var legacyRead = storageAdapter.read(legacyKeys[sourceIndex]);
+          var legacyRaw = legacyRead.ok ? legacyRead.value : null;
+          if (legacyRaw === null || legacyRaw === undefined) continue;
+          var legacyValidation = null;
           try {
-            var parsed1 = JSON.parse(v1raw);
-            val1 = CORE.validateStoreV2(prepareForValidation(parsed1));
+            var legacyParsed = JSON.parse(legacyRaw);
+            legacyValidation = CORE.validateStoreV2(prepareForValidation(legacyParsed));
           } catch (e) {
-            // 行 5:v1 解析/归一化异常
-            this.legacyError = { rawText: v1raw, errors: ['JSON 解析失败:' + e.message] };
+            this.legacyError = { rawText: legacyRaw, errors: ['JSON 解析失败:' + e.message] };
             this.booted = true;
             return;
           }
-          if (val1.ok) {
-            // 行 4:归一化迁移成功 → 写入 v2 并使用,v1 保留
-            this.store = val1.data;
+          if (legacyValidation.ok) {
+            this.store = legacyValidation.data;
             this.dataSource = 'migrated';
-            this.persistNow(); // 写失败 → 行 7 机制(红条 + beforeunload + 变更重试)
+            this.persistNow();
             this.booted = true;
             return;
           }
-          // 行 5:v1 校验失败
-          this.legacyError = { rawText: v1raw, errors: val1.errors };
+          this.legacyError = { rawText: legacyRaw, errors: legacyValidation.errors };
           this.booted = true;
           return;
         }
-        // 行 6:首次使用
+
+        // 首次使用
         this.store = cloneFactoryData();
         this.dataSource = 'factory';
         this.persistNow();
@@ -2582,14 +2670,14 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
 
       closeWelcome: function () { this.showWelcome = false; },
 
-      // ---------------- 持久化(仅写 v2;v1 永不触碰) ----------------
+      // ---------------- 持久化(仅写 v3;v2/v1 永不触碰) ----------------
       persistNow: function () {
         var now = formatDateTime(new Date());
         this.store.savedAt = now;
         var json;
         try { json = JSON.stringify(this.store); }
         catch (e) { this.storageStatus = 'writeFailed'; this.installUnloadGuard(); return; }
-        var res = storageAdapter.write(V2_KEY, json);
+        var res = storageAdapter.write(V3_KEY, json);
         if (res.ok) {
           if (this.storageStatus !== 'normal') {
             this.storageStatus = 'normal';
@@ -2621,10 +2709,10 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         if (t === '') { alert('人员姓名不能为空'); return null; }
         var exist = this.personByName[t];
         if (exist) { alert('人员“' + t + '”已存在,已为您选中现有条目'); return exist.name; }
-        var candidate = this.store.settings.persons.concat([{ name: t, external: false, note: '', belongsTo: null }]);
+        var candidate = this.store.settings.persons.concat([{ name: t, personNo: '', external: false, note: '', belongsTo: null }]);
         var errs = CORE.validatePersonsGraph(candidate);
         if (errs.length > 0) { alert('无法添加:\n' + errs.join('\n')); return null; }
-        this.store.settings.persons.push({ name: t, external: false, note: '', belongsTo: null });
+        this.store.settings.persons.push({ name: t, personNo: '', external: false, note: '', belongsTo: null });
         this.persistNow();
         return t;
       },
@@ -2666,8 +2754,8 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         // candidate 需同步"改名后子节点归属人也随之更新"这一后续动作,否则校验的是
         // "父节点已改名但子节点仍指向旧名字"的断链中间态,会被误判为非法。
         var candidate = this.store.settings.persons.map(function (x) {
-          if (x === p) return { name: newName, external: x.external, note: x.note, belongsTo: x.belongsTo };
-          if (x.belongsTo === oldName) return { name: x.name, external: x.external, note: x.note, belongsTo: newName };
+          if (x === p) return { name: newName, personNo: x.personNo, external: x.external, note: x.note, belongsTo: x.belongsTo };
+          if (x.belongsTo === oldName) return { name: x.name, personNo: x.personNo, external: x.external, note: x.note, belongsTo: newName };
           return x;
         });
         var errs = CORE.validatePersonsGraph(candidate);
@@ -2679,6 +2767,24 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         this.cancelRenamePerson();
       },
       onPersonExternalChange: function () { this.persistNow(); },
+      onPersonNoChange: function (p, evt) {
+        var oldValue = p.personNo || '';
+        var value = (evt.target.value || '').trim();
+        if (value !== '' && !/^(?!000)\d{3}$/.test(value)) {
+          alert('人员序号必须是 001-999 的三位数字，也可以暂时留空');
+          evt.target.value = oldValue;
+          return;
+        }
+        var duplicate = this.store.settings.persons.find(function (x) { return x !== p && x.personNo === value && value !== ''; });
+        if (duplicate) {
+          alert('序号“' + value + '”已由人员“' + duplicate.name + '”使用，不能重复');
+          evt.target.value = oldValue;
+          return;
+        }
+        p.personNo = value;
+        evt.target.value = value;
+        this.persistNow();
+      },
       onPersonNoteChange: function (p) {
         p.note = (p.note || '').trim();
         this.persistNow();
@@ -2694,7 +2800,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         var old = p.belongsTo;
         // 写前全图校验(§1.1 第 4 条):构造变更后的整份 persons 跑完整约束
         var candidate = this.store.settings.persons.map(function (x) {
-          if (x === p) return { name: x.name, external: x.external, note: x.note, belongsTo: target };
+          if (x === p) return { name: x.name, personNo: x.personNo, external: x.external, note: x.note, belongsTo: target };
           return x;
         });
         var errs = CORE.validatePersonsGraph(candidate);
@@ -3084,7 +3190,8 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         var VOYAGE_COL_START = 6, VOYAGE_COL_END = 12;   // 需纵向合并的列区间(含端点)
         var voyageMergeRanges = [];
         var profitTotal = 0;
-        this.store.voyages.forEach(function (v) {
+        var sortedVoyages = this.store.voyages.slice().sort(CORE.compareVoyagesForExport);
+        sortedVoyages.forEach(function (v) {
           var vf = voyageFlows(self.store, v.id);
           var expense = calcExpense(vf);
           var cnyFee = calcCnyFee(v, vf);
@@ -3133,23 +3240,24 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         // 人员/外聘/归属人在每行重复显示,便于 Excel 拉透视表二次分析。
         // 船次数/监装天数为人级合计,仅写在每人首行、同人其余科目行留空(与主表船次级字段纵向留空同口径),
         // 避免同一数字在多行重复导致目视汇总时误相加;buildSheetFromRows 对空串单元格直接跳过不写入。
-        var rows2 = [['人员', '外聘', '归属人', '船次数', '监装天数', '科目', '报销金额', '补贴金额']];
-        this.personSummaryBase.forEach(function (p) {
+        var rows2 = [['序号', '人员', '外聘', '归属人', '船次数', '监装天数', '科目', '报销金额', '补贴金额']];
+        var sortedPersons = this.personSummaryBase.slice().sort(CORE.comparePersonSummaries);
+        sortedPersons.forEach(function (p) {
           var first = true; // 每人首个明细行携带船次数/监装天数,其余行留空
           self.subjects.forEach(function (t) {
             var s = p.byType[t];
             if (s) {
-              rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', t, s.reimb, s.allow]);
+              rows2.push([p.personNo || '', p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', t, s.reimb, s.allow]);
               first = false;
             }
           });
           if (p.usdSub) {
-            rows2.push([p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', '美元支付', p.usdSub.reimb, p.usdSub.allow]);
+            rows2.push([p.personNo || '', p.person, p.external ? '是' : '否', p.belongsTo || '', first ? p.voyageCount : '', first ? p.days : '', '美元支付', p.usdSub.reimb, p.usdSub.allow]);
             first = false;
           }
         });
-        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2, 5], numCols: [3, 4], moneyCols: [6, 7] });
-        ws2['!cols'] = [{ wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 13 }];
+        var ws2 = this.buildSheetFromRows(rows2, { textCols: [0, 1, 2, 3, 6], numCols: [4, 5], moneyCols: [7, 8] });
+        ws2['!cols'] = [{ wch: 8 }, { wch: 16 }, { wch: 7 }, { wch: 12 }, { wch: 8 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 13 }];
 
         // 按船东汇总
         var rows3 = [['船东', '船次数', '船次监装天数合计', '监装费USD合计', '人民币费用合计', '支出合计', '利润合计']];
