@@ -785,13 +785,25 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
         <thead><tr><th class="num">汇率</th><th>备注</th><th>默认</th><th>操作</th></tr></thead>
         <tbody>
           <tr v-for="(r,i) in rates" :key="r.value">
-            <td class="num">{{ r.value }}</td>
-            <td>{{ r.note || '—' }}</td>
-            <td><span class="badge badge-ok" v-if="i===0">默认</span></td>
-            <td>
-              <button class="btn-link" v-if="i!==0" @click="setDefaultRate(i)">设为默认</button>
-              <button class="btn-link danger" @click="removeRate(i)">删除</button>
-            </td>
+            <template v-if="editingRateIndex===i">
+              <td class="num"><input type="text" v-model="editRateValueStr" style="width:100px" @keydown.enter="saveEditRate" /></td>
+              <td><input type="text" v-model="editRateNote" placeholder="备注(可选)" style="width:160px" @keydown.enter="saveEditRate" /></td>
+              <td><span class="badge badge-ok" v-if="i===0">默认</span></td>
+              <td>
+                <button class="btn-link" @click="saveEditRate">保存</button>
+                <button class="btn-link" @click="cancelEditRate">取消</button>
+              </td>
+            </template>
+            <template v-else>
+              <td class="num">{{ r.value }}</td>
+              <td>{{ r.note || '—' }}</td>
+              <td><span class="badge badge-ok" v-if="i===0">默认</span></td>
+              <td>
+                <button class="btn-link" @click="startEditRate(i)">编辑</button>
+                <button class="btn-link" v-if="i!==0" @click="setDefaultRate(i)">设为默认</button>
+                <button class="btn-link danger" @click="removeRate(i)">删除</button>
+              </td>
+            </template>
           </tr>
         </tbody>
       </table>
@@ -2393,7 +2405,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     importOwnerFromShipNo: importOwnerFromShipNo,
     SHIPNO_OWNER_MAP: SHIPNO_OWNER_MAP,
     IMPORT_COMPANY_SUFFIXES: IMPORT_COMPANY_SUFFIXES,
-    APP_VERSION: '1.8.1' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.8.2' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -3105,6 +3117,9 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         newSubjectInput: '',
         newRateValueStr: '',
         newRateNote: '',
+        editingRateIndex: null,   // 汇率行内编辑:当前编辑行下标(null=无)
+        editRateValueStr: '',     // 编辑中的汇率值
+        editRateNote: '',         // 编辑中的备注
 
         importPreview: null,
         importErrors: null,
@@ -4033,16 +4048,48 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
         this.persistNow();
       },
       removeRate: function (i) {
+        this.cancelEditRate();  // codex H-3:删除会重排数组,先取消编辑避免 editingRateIndex 下标漂移改错行
         var r = this.store.settings.rates[i];
         if (!confirm('确定从清单删除汇率 ' + r.value + '?已有航次的汇率快照不受影响。')) return;
         this.store.settings.rates.splice(i, 1);
         this.persistNow();
       },
       setDefaultRate: function (i) {
+        this.cancelEditRate();  // codex H-3:设默认会重排数组(splice+unshift),先取消编辑避免下标漂移
         if (i === 0) return;
         var r = this.store.settings.rates.splice(i, 1)[0];
         this.store.settings.rates.unshift(r);
         this.persistNow();
+      },
+      // 汇率行内编辑(改汇率值 + 备注;复用 submitNewRate 的校验口径)
+      startEditRate: function (i) {
+        this.cancelEditRate();  // codex H-3:切换编辑先清理旧状态,避免残留
+        var r = this.store.settings.rates[i];
+        this.editingRateIndex = i;
+        this.editRateValueStr = String(r.value);
+        this.editRateNote = r.note || '';
+      },
+      cancelEditRate: function () {
+        this.editingRateIndex = null;
+        this.editRateValueStr = '';
+        this.editRateNote = '';
+      },
+      saveEditRate: function () {
+        var i = this.editingRateIndex;
+        if (i === null) return;
+        var t = (this.editRateValueStr || '').trim();
+        if (t === '' || !/^\d+(\.\d+)?$/.test(t)) { alert('汇率必须是 ≥0 的数字'); return; }
+        var num = Number(t);
+        if (!Number.isFinite(num)) { alert('汇率数值无效'); return; }
+        // 重复校验:排除自己那行
+        var dup = this.store.settings.rates.some(function (r, idx) { return idx !== i && r.value === num; });
+        if (dup) { alert('汇率 ' + num + ' 已在清单中,不能与其它行重复'); return; }
+        var r = this.store.settings.rates[i];
+        r.value = num;
+        r.note = (this.editRateNote || '').trim();
+        this.cancelEditRate();
+        this.persistNow();
+        // 注:编辑只改清单;已有航次存的是汇率数值快照,不受影响(与增删同口径)
       },
       rateOptionLabel: function (r) {
         return String(r.value) + (r.note ? '(' + r.note + ')' : '');
@@ -4814,20 +4861,55 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           var n = Number(s);
           return isFinite(n) ? n : NaN;
         };
+        // 导入当天日期(YYYY-MM-DD),所有导入流水统一用此日期(用户口径:台账只看汇总,不看逐笔发生日期)
+        var importDate = (function () {
+          var d = new Date();
+          var y = d.getFullYear(), mo = d.getMonth() + 1, da = d.getDate();
+          return y + '-' + (mo < 10 ? '0' + mo : mo) + '-' + (da < 10 ? '0' + da : da);
+        })();
+
+        // 合并同人同类型流水(用户口径 2026-07-17):
+        // 分组 key = person|type|paidBy|币种(USD/RMB)。reimb/allow 各自累加,originalForeign.amount 累加(rate 不变),
+        // date 统一=导入当天,remark 置空。paidBy/币种进 key 保护 PDF 下发标记与美元口径不被合并丢失。
         var amtBad = false;
+        var mergeMap = Object.create(null);   // key → 合并累加的流水
+        var mergeOrder = [];                  // 保持首次出现顺序
         m.flows.forEach(function (f) {
           var reimb = toAmt(f.reimb), allow = toAmt(f.allow);
           if (!isFinite(reimb) || !isFinite(allow)) { amtBad = true; return; }
-          candidate.flows.push({
-            id: seq++, voyageId: voyageId,
-            person: String(f.person).trim(), type: String(f.type).trim(),
-            days: 0, reimb: reimb, allow: allow,
-            date: f.date, originalForeign: f.originalForeign || null,
-            paidBy: (f.paidBy === 'personal' || f.paidBy === 'company') ? f.paidBy : null,
-            remark: String(f.remark || '').trim()
-          });
+          var person = String(f.person).trim(), type = String(f.type).trim();
+          var paidBy = (f.paidBy === 'personal' || f.paidBy === 'company') ? f.paidBy : null;
+          // codex H-1:isUsd 用 Number.isFinite 而非 typeof==='number'(排除 NaN/Infinity 被当美元)
+          var isUsd = !!(f.originalForeign && Number.isFinite(f.originalForeign.amount));
+          // codex M-2:key 用 JSON.stringify 生成,避免字段含竖线导致不同四元组撞键
+          var key = JSON.stringify([person, type, paidBy || '', isUsd ? 'USD' : 'RMB']);
+          if (!mergeMap[key]) {
+            mergeMap[key] = {
+              person: person, type: type, paidBy: paidBy,
+              reimb: 0, allow: 0,
+              originalForeign: isUsd ? { amount: 0, rate: f.originalForeign.rate } : null
+            };
+            mergeOrder.push(key);
+          }
+          // codex H-2:累加时不逐笔 round2(会破坏总和守恒),用原值累加,落库时才 round2 一次
+          var g = mergeMap[key];
+          g.reimb += reimb;
+          g.allow += allow;
+          if (isUsd && g.originalForeign) g.originalForeign.amount += f.originalForeign.amount;
         });
         if (amtBad) { alert('存在金额无法解析的流水,已取消导入。请检查明细金额。'); return; }
+        // 落库:每组一条流水,金额在此边界 round2 一次(codex H-2:原值累加、显示/落库边界才舍入,符合项目金额口径),date=导入当天,remark 置空
+        mergeOrder.forEach(function (key) {
+          var g = mergeMap[key];
+          candidate.flows.push({
+            id: seq++, voyageId: voyageId,
+            person: g.person, type: g.type,
+            days: 0, reimb: CORE.round2(g.reimb), allow: CORE.round2(g.allow),
+            date: importDate,
+            originalForeign: g.originalForeign ? { amount: CORE.round2(g.originalForeign.amount), rate: g.originalForeign.rate } : null,
+            paidBy: g.paidBy, remark: ''
+          });
+        });
         candidate.seq = seq;
 
         // 追加的人员若不在名录,补进 persons(集合用 Object.create(null),codex #7)
