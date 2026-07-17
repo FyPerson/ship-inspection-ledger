@@ -1050,11 +1050,12 @@ footer.appfoot { text-align: center; font-size: 12px; color: var(--ink-soft); pa
         <div class="import-head-grid">
           <label>监装费(USD)<input type="text" :value="xlsImport.feeUSD" readonly /></label>
           <label>折人民币(×{{ xlsImport.usdRate }})<input type="text" :value="fmtMoney(xlsImport.feeUSD * xlsImport.usdRate)" readonly /></label>
+          <label v-if="xlsImport.feeDays !== null && xlsImport.feeDays > 0">监装天数(共X天合计)<input type="text" :value="xlsImport.feeDays + ' 天'" readonly /></label>
         </div>
         <p class="hint" v-if="xlsImport.feeUSDDetail.length">
           明细:<span v-for="(d,i) in xlsImport.feeUSDDetail" :key="'fd'+i">{{ d.subject }} ${{ d.amount }}<span v-if="i<xlsImport.feeUSDDetail.length-1">、</span></span>
         </p>
-        <p class="hint">导入后将填入该航次的「监装费USD」字段(收入侧),用于自动计算利润。</p>
+        <p class="hint">导入后将填入该航次的「监装费USD」字段(收入侧),用于自动计算利润<span v-if="xlsImport.feeDays !== null && xlsImport.feeDays > 0">;监装天数 {{ xlsImport.feeDays }} 天将填入航次「天数」</span>。</p>
       </template>
       <p class="hint" v-else>未从美金请款页提取到监装费。导入后利润仅按已有收入计算,可在「航次管理」手工填写监装费。</p>
     </div>
@@ -2173,6 +2174,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     var feeUSD = null;             // 监装费收入(美元):美金请款页监装类合计,填 voyage.feeUSDOverride(v1.8.1 Commit 6)
     var feeUSDDetail = [];        // 监装费明细行(费用项目+金额),供预览展示
     var feeUSDPageCount = 0;      // 已提取到监装费的美金请款页数(codex M-1:≥2 页提醒防重复累加)
+    var feeDays = null;           // 航次监装天数:美金请款页备注列"共X天"合计,填 voyage.days(v1.8.3)。null=未提取到
 
     var personFirstSeen = {}; // 人员首次出现顺序(codex #5 稳定排序)
     var personSeq = 0;
@@ -2213,6 +2215,28 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
               if (feeUSDPageCount >= 2) warnings.push({ sheet: sname, msg: '检测到多个美金请款页,监装费已累加(当前合计 ' + feeUSD + ' USD),请核对是否有重复/复制页' });
             } else {
               warnings.push({ sheet: sname, msg: '美金请款页未识别到监装费/监卸费/劳务费行,监装费收入为空,请核对', skipped: true });
+            }
+            // 航次监装天数:扫备注说明列(数组索引 6,即序号/日期/港口/费用项目/金额/单据张数之后的第7列)
+            // 的"共X天",宽容匹配空格,多行合计填 voyage.days(v1.8.3)
+            // codex M-1:遇合计行即 break(同 feeUSD 循环终止条件),避免扫到合计/签名行的"共X天"误加
+            var daysSum = 0, daysMatched = 0;
+            for (var di = DATA_START_IDX; di < frows.length; di++) {
+              var drow = frows[di] || [];
+              var dTail = importNorm(drow[2]), dHead = importNorm(drow[0]);
+              if (/^(合计|本页合计|两页合计|合计\(.*\))$/.test(dTail) || /^(合计|本页合计|两页合计)$/.test(dHead)) break;
+              var dm = String(drow[6] || '').match(/共\s*(\d+)\s*天/);
+              if (dm) {
+                var dnum = Number(dm[1]);
+                // codex M-2:只累计安全正整数(排除 0/超大数),脏数据 warning 提醒不静默累加
+                if (Number.isSafeInteger(dnum) && dnum > 0) { daysSum += dnum; daysMatched++; }
+                else warnings.push({ sheet: sname, row: di + 1, msg: '备注天数异常("' + dm[0] + '"),已跳过,请核对' });
+              }
+            }
+            if (daysMatched > 0) {
+              feeDays = (feeDays === null ? 0 : feeDays) + daysSum;
+            } else if (fCnt > 0) {
+              // 提取到监装费但备注列没有"共X天" → 天数无法自动填,提醒手工填(检测+提醒上限)
+              warnings.push({ sheet: sname, msg: '美金请款页备注未识别到"共X天",航次天数未自动填入,请在航次管理手工填写' });
             }
           }
           // 顶部元数据也参与交叉校验(美金请款页同样有船名/船号/航次)
@@ -2367,6 +2391,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
       meta: meta, owner: owner,
       flows: flows,
       feeUSD: feeUSD,               // 监装费收入(美元原值),null=未提取到,填 voyage.feeUSDOverride
+      feeDays: feeDays,             // 航次监装天数(美金请款页"共X天"合计),null=未提取到,填 voyage.days(v1.8.3)
       feeUSDDetail: feeUSDDetail,   // 监装费明细行(科目+金额),供预览
       subjects: Object.keys(subjectsSet),
       sheetMap: sheetMap,
@@ -2405,7 +2430,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     importOwnerFromShipNo: importOwnerFromShipNo,
     SHIPNO_OWNER_MAP: SHIPNO_OWNER_MAP,
     IMPORT_COMPANY_SUFFIXES: IMPORT_COMPANY_SUFFIXES,
-    APP_VERSION: '1.8.2' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.8.3' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -4753,6 +4778,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           }),
           warnings: res.warnings || [], errors: res.errors || [],
           feeUSD: (typeof res.feeUSD === 'number') ? res.feeUSD : null,   // 监装费收入(美元),填 voyage.feeUSDOverride
+          feeDays: (typeof res.feeDays === 'number') ? res.feeDays : null,  // 航次监装天数("共X天"合计),填 voyage.days(v1.8.3)
           feeUSDDetail: res.feeUSDDetail || [],
           ackSkips: false, suspectDupAck: false
         };
@@ -4844,7 +4870,29 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
             targetVoyage.feeUSDOverride = m.feeUSD;
             feeResult = { action: 'written', value: m.feeUSD };
           }
-          // 填监装费后 days/unitPrice 保持:监装费是单据确定金额,走 feeUSDOverride 覆盖自动值,语义正确
+          // 填监装费后 unitPrice 保持:监装费是单据确定金额,走 feeUSDOverride 覆盖自动值,语义正确
+        }
+
+        // 航次监装天数(v1.8.3):美金请款页"共X天"合计 → targetVoyage.days
+        // 复用航次已有天数(days>0)且与导入不同 → 不覆盖只弹确认(与监装费同口径,防冲掉用户手工调整)
+        var daysResult = null; // null=未处理 / {action:'written'|'kept'|'same', value}
+        if (typeof m.feeDays === 'number' && m.feeDays > 0) {
+          var dReused = (sameShipNo.indexOf(targetVoyage) !== -1);
+          var dHasExisting = (Number.isInteger(targetVoyage.days) && targetVoyage.days > 0); // 0=未填(新建默认),视为无值
+          if (dReused && dHasExisting && targetVoyage.days !== m.feeDays) {
+            var oldDays = targetVoyage.days;
+            if (!confirm('目标航次已有监装天数 ' + oldDays + ' 天,本次导入为 ' + m.feeDays + ' 天。\n保留台账现有值(取消)还是用导入值覆盖(确定)?')) {
+              daysResult = { action: 'kept', value: oldDays };
+            } else {
+              targetVoyage.days = m.feeDays;
+              daysResult = { action: 'written', value: m.feeDays };
+            }
+          } else if (dReused && dHasExisting) {
+            daysResult = { action: 'same', value: targetVoyage.days }; // 已有值且与导入相同
+          } else {
+            targetVoyage.days = m.feeDays; // 无现有值(新建 or 复用未填)→ 直接填
+            daysResult = { action: 'written', value: m.feeDays };
+          }
         }
 
         // 合并新科目 + 补色(集合用 Object.create(null),规范化 trim,codex #7)
@@ -4949,7 +4997,14 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           else if (feeResult.action === 'kept') feeMsg = '\n监装费:已保留台账现有值 ' + feeResult.value + ' USD(本次导入值 ' + m.feeUSD + ' USD 未覆盖)。';
           else if (feeResult.action === 'same') feeMsg = '\n监装费:' + feeResult.value + ' USD(与台账现有值一致,无需改动)。';
         }
-        alert('导入成功:已追加 ' + m.flows.length + ' 条流水到航次「' + targetVoyage.ship + '(' + targetVoyage.shipNo + ')」。' + feeMsg);
+        // 天数提示据 daysResult 真实处理结果生成(v1.8.3,与监装费同口径)
+        var daysMsg = '';
+        if (daysResult) {
+          if (daysResult.action === 'written') daysMsg = '\n监装天数:' + daysResult.value + ' 天(已填入该航次)。';
+          else if (daysResult.action === 'kept') daysMsg = '\n监装天数:已保留台账现有值 ' + daysResult.value + ' 天(本次导入值 ' + m.feeDays + ' 天未覆盖)。';
+          else if (daysResult.action === 'same') daysMsg = '\n监装天数:' + daysResult.value + ' 天(与台账现有值一致,无需改动)。';
+        }
+        alert('导入成功:已追加 ' + m.flows.length + ' 条流水到航次「' + targetVoyage.ship + '(' + targetVoyage.shipNo + ')」。' + feeMsg + daysMsg);
       },
 
       triggerImportFile: function () { this.$refs.importFileInput.click(); },
