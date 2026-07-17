@@ -2322,8 +2322,24 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           rmb = round2(rmb * IMPORT_USD_RATE);
         }
         if (personFirstSeen[cls.person] === undefined) personFirstSeen[cls.person] = personSeq++;
+        // 流水天数(v1.8.4):仅 IMPORT_ALLOW_SUBJECTS 定义的补贴/劳务类科目(isAllow)从备注"共X天"提取
+        // (如"2026/5/10-2026/5/14,共5天,1000元/天"→5)。其它科目(交通/住宿等)不提取,保持 0(用户口径:只有补贴需要天数)
+        // codex L-2:单条备注只取首个"共X天"(业务保证一格一区间,多笔补贴分多行,不做 matchAll)
+        var fdays = 0;
+        if (isAllow) {
+          var rtxt = String(r[6] || '');
+          var rm = rtxt.match(/共\s*(\d+)\s*天/);
+          if (rm) {
+            var rn = Number(rm[1]);
+            if (Number.isSafeInteger(rn) && rn > 0) fdays = rn;
+            else warnings.push({ sheet: sname, row: i + 1, msg: '补贴备注天数异常("' + rm[0] + '"),流水天数记 0,请核对' });
+          } else if (/共/.test(rtxt) && /天/.test(rtxt)) {
+            // codex M-1:备注疑似含天数但非"共X天"整数格式(如"共1.5天"/"共五天"/"共 天")→提醒不静默(检测+提醒口径)
+            warnings.push({ sheet: sname, row: i + 1, msg: '补贴备注疑似含天数但无法解析("' + rtxt.slice(0, 30) + '"),流水天数记 0,请核对或手工填写' });
+          }
+        }
         flows.push({
-          person: cls.person, type: cat, date: dd.value,
+          person: cls.person, type: cat, date: dd.value, days: fdays,
           reimb: isAllow ? 0 : rmb, allow: isAllow ? rmb : 0,
           paidBy: cls.paidBy, originalForeign: of,
           remark: String(r[6] || '').trim(),
@@ -2430,7 +2446,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
     importOwnerFromShipNo: importOwnerFromShipNo,
     SHIPNO_OWNER_MAP: SHIPNO_OWNER_MAP,
     IMPORT_COMPANY_SUFFIXES: IMPORT_COMPANY_SUFFIXES,
-    APP_VERSION: '1.8.3' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
+    APP_VERSION: '1.8.4' // 版本号全文件唯一定义点(方案 v1.4 A1);UI 一律经 data().appVersion 引用
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
@@ -4772,6 +4788,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           flows: res.flows.map(function (f) {
             return {
               person: f.person, date: f.date, type: f.type,
+              days: (Number.isSafeInteger(f.days) && f.days >= 0) ? f.days : 0,   // codex L-3:显式判断,不用 ||0 吞 falsy 异常值
               reimb: f.reimb, allow: f.allow, paidBy: f.paidBy,
               originalForeign: f.originalForeign, remark: f.remark || ''
             };
@@ -4930,11 +4947,13 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           // codex H-1:isUsd 用 Number.isFinite 而非 typeof==='number'(排除 NaN/Infinity 被当美元)
           var isUsd = !!(f.originalForeign && Number.isFinite(f.originalForeign.amount));
           // codex M-2:key 用 JSON.stringify 生成,避免字段含竖线导致不同四元组撞键
+          // codex L-4(35审):key 只区分 USD/RMB 不含汇率——因导入美元汇率是 IMPORT_USD_RATE 常量(6.8)写死,
+          // 同一份导入内所有美元流水 rate 必然相同,不存在同组混合不同 rate。若将来汇率可变,需把 rate 纳入 key。
           var key = JSON.stringify([person, type, paidBy || '', isUsd ? 'USD' : 'RMB']);
           if (!mergeMap[key]) {
             mergeMap[key] = {
               person: person, type: type, paidBy: paidBy,
-              reimb: 0, allow: 0,
+              days: 0, reimb: 0, allow: 0,
               originalForeign: isUsd ? { amount: 0, rate: f.originalForeign.rate } : null
             };
             mergeOrder.push(key);
@@ -4943,6 +4962,8 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           var g = mergeMap[key];
           g.reimb += reimb;
           g.allow += allow;
+          // 流水天数累加(v1.8.4):补贴多笔合并时天数相加(如 共5天+共17天+共9天=31);非补贴各笔 days=0 累加仍为 0
+          g.days += (Number.isSafeInteger(f.days) && f.days > 0) ? f.days : 0;
           if (isUsd && g.originalForeign) g.originalForeign.amount += f.originalForeign.amount;
         });
         if (amtBad) { alert('存在金额无法解析的流水,已取消导入。请检查明细金额。'); return; }
@@ -4952,7 +4973,7 @@ if (typeof window !== "undefined") { window.JZBX_INITIAL_DATA = JZBX_INITIAL_DAT
           candidate.flows.push({
             id: seq++, voyageId: voyageId,
             person: g.person, type: g.type,
-            days: 0, reimb: CORE.round2(g.reimb), allow: CORE.round2(g.allow),
+            days: g.days, reimb: CORE.round2(g.reimb), allow: CORE.round2(g.allow),
             date: importDate,
             originalForeign: g.originalForeign ? { amount: CORE.round2(g.originalForeign.amount), rate: g.originalForeign.rate } : null,
             paidBy: g.paidBy, remark: ''
